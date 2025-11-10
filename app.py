@@ -3,6 +3,7 @@ from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QPixmap, QTransform, QPainter, QFont, QColor, QIcon
 from PySide6.QtWidgets import QApplication, QWidget
 from pynput import keyboard as pynput_keyboard
+from pynput import mouse as pynput_mouse
 
 def resource_path(*parts):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -146,35 +147,66 @@ class GlobalKeyListener(QThread):
         super().__init__()
         self.keys = set(k.lower() for k in keys)
         self._pressed = set()
-        self._listener = None
+        self._kb_listener = None
+        self._ms_listener = None
+        
+    def _norm_key(self, key):
+        ch = getattr(key, "char", None)
+        if ch: return ch.lower()
+            
+        name = getattr(key, "name", None)
+        if name: return name.lower()
+            
+        vk = getattr(key, "vk", None)
+        if vk is not None:
+            keypad_map = {
+                96: "num0", 97: "num1", 98: "num2", 99: "num3", 100: "num4",
+                101: "num5", 102: "num6", 103: "num7", 104: "num8", 105: "num9",
+                110: "num_decimal", 106: "num_multiply", 107: "num_add",
+                109: "num_subtract", 111: "num_divide",
+            }
+            if vk in keypad_map:
+                return keypad_map[vk]
+        
+        return None
+        
+    def _norm_mouse(self, button):
+        if button == pynput_mouse.Button.left:   return "mouse_left"
+        if button == pynput_mouse.Button.right:  return "mouse_right"
+        if button == pynput_mouse.Button.middle: return "mouse_middle"
+        if str(button).endswith(".x1"):          return "mouse4"
+        if str(button).endswith(".x2"):          return "mouse5"
+        return None
 
     def run(self):
-        def on_press(key):
-            try:
-                k = key.char.lower()
-            except Exception:
-                return
-            if k in self.keys and k not in self._pressed:
-                self._pressed.add(k)
-                self.keyPressed.emit(k)
+        def on_kb_press(key):
+            k = self._norm_key(key)
+            if k and k in self.keys and k not in self._pressed:
+                self._pressed.add(k); self.keyPressed.emit(k)
 
-        def on_release(key):
-            try:
-                k = key.char.lower()
-            except Exception:
-                return
-            if k in self.keys:
-                if k in self._pressed:
-                    self._pressed.remove(k)
-                self.keyReleased.emit(k)
+        def on_kb_release(key):
+            k = self._norm_key(key)
+            if k and k in self.keys:
+                self._pressed.discard(k); self.keyReleased.emit(k)
 
-        with pynput_keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
-            self._listener = listener
-            listener.join()
+        def on_ms_click(x, y, button, pressed):
+            k = self._norm_mouse(button)
+            if not k or k not in self.keys:
+                return
+            if pressed:
+                if k not in self._pressed:
+                    self._pressed.add(k); self.keyPressed.emit(k)
+            else:
+                self._pressed.discard(k); self.keyReleased.emit(k)
+
+        with pynput_keyboard.Listener(on_press=on_kb_press, on_release=on_kb_release) as kbl, \
+             pynput_mouse.Listener(on_click=on_ms_click) as msl:
+            self._kb_listener, self._ms_listener = kbl, msl
+            kbl.join(); msl.join()
 
     def stop(self):
-        if self._listener is not None:
-            self._listener.stop()
+        if self._kb_listener: self._kb_listener.stop()
+        if self._ms_listener: self._ms_listener.stop()
 
 
 class Canvas(QWidget):
@@ -355,3 +387,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
