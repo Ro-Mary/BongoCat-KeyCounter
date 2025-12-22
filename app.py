@@ -13,6 +13,23 @@ def app_dir():
     return os.path.dirname(sys.executable) if getattr(sys, "frozen", False) \
            else os.path.dirname(os.path.abspath(__file__))
 
+def normalize_token(name: str) -> str:
+    n = (name or "").lower()
+    alias = {
+        "control": "ctrl", "ctrl_l": "ctrl", "ctrl_r": "ctrl",
+        "shift_l": "shift", "shift_r": "shift",
+        "alt_l": "alt", "alt_r": "alt",
+        "windows": "cmd", "win": "cmd",
+        "escape": "esc",
+    }
+    return alias.get(n, n)
+
+def parse_combo(s: str) -> frozenset[str]:
+    if not s:
+        return frozenset()
+    parts = [normalize_token(p) for p in s.split("+") if p]
+    return frozenset(parts)
+
 W, H = 393, 252
 PKG_ASSETS = resource_path("img")
 IMG_BG1 = os.path.join(PKG_ASSETS, "bg1.png")
@@ -45,7 +62,7 @@ def skill_path(name: str) -> str:
 DEFAULT_CONFIG = {
     "keys": ["q", "e"],
     "counts": {"key1": 0, "key2": 0},
-    "delay": {"key1": 2.5, "key2": 2.5}
+    "delay": {"key1": 2.1, "key2": 2.1}
 }
 
 def load_config():
@@ -151,14 +168,25 @@ class GlobalKeyListener(QThread):
         self._ms_listener = None
         
     def _norm_key(self, key):
+        # 문자키
         ch = getattr(key, "char", None)
-        if ch: return ch.lower()
-            
+        if ch:
+            if len(ch) == 1 and "a" <= ch.lower() <= "z":
+                return normalize_token(ch)
+
+        # 이름키
         name = getattr(key, "name", None)
-        if name: return name.lower()
-            
+        if name:
+            return normalize_token(name)
+
+        # 넘패드: vk 매핑
         vk = getattr(key, "vk", None)
         if vk is not None:
+                # A(65) ~ Z(90)
+            if 65 <= vk <= 90:
+                return normalize_token(chr(vk).lower())
+            
+            # 숫자패드
             keypad_map = {
                 96: "num0", 97: "num1", 98: "num2", 99: "num3", 100: "num4",
                 101: "num5", 102: "num6", 103: "num7", 104: "num8", 105: "num9",
@@ -166,17 +194,18 @@ class GlobalKeyListener(QThread):
                 109: "num_subtract", 111: "num_divide",
             }
             if vk in keypad_map:
-                return keypad_map[vk]
-        
+                return normalize_token(keypad_map[vk])
+
         return None
         
     def _norm_mouse(self, button):
-        if button == pynput_mouse.Button.left:   return "mouse_left"
-        if button == pynput_mouse.Button.right:  return "mouse_right"
-        if button == pynput_mouse.Button.middle: return "mouse_middle"
-        if str(button).endswith(".x1"):          return "mouse4"
-        if str(button).endswith(".x2"):          return "mouse5"
-        return None
+        if button == pynput_mouse.Button.left:   name = "mouse_left"
+        elif button == pynput_mouse.Button.right:  name = "mouse_right"
+        elif button == pynput_mouse.Button.middle: name = "mouse_middle"
+        elif str(button).endswith(".x1"):          name = "mouse4"
+        elif str(button).endswith(".x2"):          name = "mouse5"
+        else: return None
+        return normalize_token(name)
 
     def run(self):
         def on_kb_press(key):
@@ -308,13 +337,23 @@ class Window(QWidget):
         self.keys = cfg["keys"]
         self.counts = cfg["counts"]
         self.delay = cfg["delay"]
+
+        # 조합 파싱
+        self.combo1 = parse_combo(self.keys[0])
+        self.combo2 = parse_combo(self.keys[1])
+
+        self._down = set()
+        self._latched = {"key1": False, "key2": False}
         self._last_accept = {"key1": 0.0, "key2": 0.0}
+
+        # 관찰 토큰
+        watch_tokens = set(self.combo1) | set(self.combo2)
 
         self.canvas = Canvas(self.keys, self.counts)
         self.canvas.setParent(self)   
 
-        # 키 리스너
-        self.gkh = GlobalKeyListener(keys=self.keys)
+        # 키 리스너 생성 시 관찰 토큰 전달
+        self.gkh = GlobalKeyListener(keys=watch_tokens)
         self.gkh.keyPressed.connect(self._on_global_key_down)
         self.gkh.keyReleased.connect(self._on_global_key_up)
         self.gkh.start()
@@ -334,27 +373,41 @@ class Window(QWidget):
                     pass
 
     def _on_global_key_down(self, k: str):
+        #print("DOWN:", k, "down-set:", self._down)
+        self._down.add(k)
         now = time.monotonic()
-        if k == self.keys[0]:
+
+        if self.combo1.issubset(self._down) and not self._latched["key1"]:
             role = "key1"
             if now - self._last_accept[role] >= self.delay.get(role, 0.0):
                 self.counts[role] = self.counts.get(role, 0) + 1
                 self._last_accept[role] = now
+                self._latched[role] = True
                 self.canvas.set_bg(1)
                 self.canvas.update()
                 save_config(self.keys, self.counts, self.delay)
 
-        elif k == self.keys[1]:
+        if self.combo2.issubset(self._down) and not self._latched["key2"]:
             role = "key2"
             if now - self._last_accept[role] >= self.delay.get(role, 0.0):
                 self.counts[role] = self.counts.get(role, 0) + 1
                 self._last_accept[role] = now
+                self._latched[role] = True
                 self.canvas.set_bg(2)
                 self.canvas.update()
                 save_config(self.keys, self.counts, self.delay)
 
     def _on_global_key_up(self, k: str):
-        if k in (self.keys[0], self.keys[1]):
+        if k in self._down:
+            self._down.remove(k)
+
+        changed = False
+        if self._latched["key1"] and not self.combo1.issubset(self._down):
+            self._latched["key1"] = False; changed = True
+        if self._latched["key2"] and not self.combo2.issubset(self._down):
+            self._latched["key2"] = False; changed = True
+
+        if changed:
             self.canvas.set_bg(3)
             self.canvas.update()
 
