@@ -1,9 +1,9 @@
 import json, os, math, sys, time
+import keyboard as kb
 from PySide6.QtCore import Qt, QSize, QThread, Signal
 from PySide6.QtGui import QPixmap, QTransform, QPainter, QFont, QColor, QIcon
 from PySide6.QtWidgets import QApplication, QWidget
-from pynput import keyboard as pynput_keyboard
-from pynput import mouse as pynput_mouse
+from pynput import keyboard as pk, mouse as pm
 
 def resource_path(*parts):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
@@ -166,6 +166,8 @@ class GlobalKeyListener(QThread):
         self._pressed = set()
         self._kb_listener = None
         self._ms_listener = None
+        self._use_keyboard_lib = sys.platform.startswith("win")
+        self._stop = False
         
     def _norm_key(self, key):
         # 문자키
@@ -179,7 +181,6 @@ class GlobalKeyListener(QThread):
         if name:
             return normalize_token(name)
 
-        # 넘패드: vk 매핑
         vk = getattr(key, "vk", None)
         if vk is not None:
                 # A(65) ~ Z(90)
@@ -199,9 +200,9 @@ class GlobalKeyListener(QThread):
         return None
         
     def _norm_mouse(self, button):
-        if button == pynput_mouse.Button.left:   name = "mouse_left"
-        elif button == pynput_mouse.Button.right:  name = "mouse_right"
-        elif button == pynput_mouse.Button.middle: name = "mouse_middle"
+        if button == pm.Button.left:   name = "mouse_left"
+        elif button == pm.Button.right:  name = "mouse_right"
+        elif button == pm.Button.middle: name = "mouse_middle"
         elif str(button).endswith(".x1"):          name = "mouse4"
         elif str(button).endswith(".x2"):          name = "mouse5"
         else: return None
@@ -216,26 +217,55 @@ class GlobalKeyListener(QThread):
         def on_kb_release(key):
             k = self._norm_key(key)
             if k and k in self.keys:
-                self._pressed.discard(k); self.keyReleased.emit(k)
+                if k in self._pressed: self._pressed.remove(k)
+                self.keyReleased.emit(k)
 
         def on_ms_click(x, y, button, pressed):
             k = self._norm_mouse(button)
-            if not k or k not in self.keys:
-                return
+            if not k or k not in self.keys: return
             if pressed:
                 if k not in self._pressed:
                     self._pressed.add(k); self.keyPressed.emit(k)
             else:
-                self._pressed.discard(k); self.keyReleased.emit(k)
+                if k in self._pressed: self._pressed.remove(k)
+                self.keyReleased.emit(k)
 
-        with pynput_keyboard.Listener(on_press=on_kb_press, on_release=on_kb_release) as kbl, \
-             pynput_mouse.Listener(on_click=on_ms_click) as msl:
-            self._kb_listener, self._ms_listener = kbl, msl
-            kbl.join(); msl.join()
+        # pynput 리스너 시작
+        kbl = pk.Listener(on_press=on_kb_press, on_release=on_kb_release)
+        msl = pm.Listener(on_click=on_ms_click)
+        kbl.start(); msl.start()
+        self._kb_listener, self._ms_listener = kbl, msl
+
+        if self._use_keyboard_lib:
+            def kb_on_press(e):
+                name = normalize_token(e.name or "")
+                if not name: return
+                name = name.replace("num ", "num").replace(" ", "_")
+                if name in self.keys and name not in self._pressed:
+                    self._pressed.add(name); self.keyPressed.emit(name)
+
+            def kb_on_release(e):
+                name = normalize_token(e.name or "")
+                if not name: return
+                name = name.replace("num ", "num").replace(" ", "_")
+                if name in self.keys:
+                    if name in self._pressed: self._pressed.remove(name)
+                    self.keyReleased.emit(name)
+
+            kb.on_press(kb_on_press, suppress=False)
+            kb.on_release(kb_on_release, suppress=False)
+
+        while not self._stop:
+            self.msleep(100)
+
+        try:
+            if self._kb_listener: self._kb_listener.stop()
+            if self._ms_listener: self._ms_listener.stop()
+            if self._use_keyboard_lib: kb.unhook_all()
+        except: pass
 
     def stop(self):
-        if self._kb_listener: self._kb_listener.stop()
-        if self._ms_listener: self._ms_listener.stop()
+        self._stop = True
 
 
 class Canvas(QWidget):
