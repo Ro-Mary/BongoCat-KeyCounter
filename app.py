@@ -175,6 +175,8 @@ class GlobalKeyListener(QThread):
         if ch:
             if len(ch) == 1 and "a" <= ch.lower() <= "z":
                 return normalize_token(ch)
+            if len(ch) == 1 and ch in "0123456789":
+                return normalize_token(ch)
 
         # 이름키
         name = getattr(key, "name", None)
@@ -186,6 +188,8 @@ class GlobalKeyListener(QThread):
                 # A(65) ~ Z(90)
             if 65 <= vk <= 90:
                 return normalize_token(chr(vk).lower())
+            if 48 <= vk <= 57:
+                return normalize_token(chr(vk))
             
             # 숫자패드
             keypad_map = {
@@ -211,15 +215,14 @@ class GlobalKeyListener(QThread):
     def run(self):
         def on_kb_press(key):
             k = self._norm_key(key)
-            if k and k in self.keys and k not in self._pressed:
-                self._pressed.add(k); self.keyPressed.emit(k)
+            if k and k in self.keys:
+                self.keyPressed.emit(k)
 
         def on_kb_release(key):
             k = self._norm_key(key)
             if k and k in self.keys:
-                if k in self._pressed: self._pressed.remove(k)
                 self.keyReleased.emit(k)
-
+                
         def on_ms_click(x, y, button, pressed):
             k = self._norm_mouse(button)
             if not k or k not in self.keys: return
@@ -238,18 +241,19 @@ class GlobalKeyListener(QThread):
 
         if self._use_keyboard_lib:
             def kb_on_press(e):
-                name = normalize_token(e.name or "")
-                if not name: return
+                name = normalize_token((e.name or ""))
                 name = name.replace("num ", "num").replace(" ", "_")
-                if name in self.keys and name not in self._pressed:
-                    self._pressed.add(name); self.keyPressed.emit(name)
+                if name.startswith("d") and len(name) == 2 and name[1].isdigit():
+                    name = name[1:]
+                if name in self.keys:
+                    self.keyPressed.emit(name)
 
             def kb_on_release(e):
-                name = normalize_token(e.name or "")
-                if not name: return
+                name = normalize_token((e.name or ""))
                 name = name.replace("num ", "num").replace(" ", "_")
+                if name.startswith("d") and len(name) == 2 and name[1].isdigit():
+                    name = name[1:]
                 if name in self.keys:
-                    if name in self._pressed: self._pressed.remove(name)
                     self.keyReleased.emit(name)
 
             kb.on_press(kb_on_press, suppress=False)
